@@ -1,0 +1,8 @@
+---
+all:
+  hosts:
+    zero:
+      ansible_host: 192.168.10.8
+      ansible_user: zero
+  vars:
+    ansible_python_interpreter: /usr/bin/python3

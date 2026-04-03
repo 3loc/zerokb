@@ -1,0 +1,40 @@
+---
+- name: Upgrade system packages on Pi Zero
+  hosts: zero
+  become: true
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: dist
+      register: apt_upgrade
+
+    - name: Autoremove unused packages
+      apt:
+        autoremove: true
+        purge: true
+
+    - name: Clean apt cache
+      apt:
+        autoclean: true
+
+    - name: Show upgraded packages
+      debug:
+        msg: "{{ apt_upgrade.stdout_lines | default(['no changes']) }}"
+      when: apt_upgrade.changed
+
+    - name: Check if reboot required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_file
+
+    - name: Reboot if required
+      reboot:
+        reboot_timeout: 120
+        msg: "Rebooting after system upgrade"
+      when: reboot_file.stat.exists

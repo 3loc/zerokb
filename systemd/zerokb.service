@@ -1,0 +1,18 @@
+[Unit]
+Description=zerokb USB HID keyboard daemon
+After=zerokb-hid.service
+Requires=zerokb-hid.service
+
+[Service]
+ExecStart=/usr/local/bin/zerokb {{ zerokb_port }}
+Restart=always
+RestartSec=1
+WatchdogSec=30
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/dev/hidg0
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

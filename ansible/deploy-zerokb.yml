@@ -1,0 +1,215 @@
+---
+- name: Deploy zerokb USB HID keyboard emulator
+  hosts: zero
+  become: true
+
+  vars:
+    zerokb_binary: ../target/armv7-unknown-linux-gnueabihf/release/zerokb
+    zerokb_port: 7070
+
+  tasks:
+    - name: Enable passwordless sudo for zero user
+      copy:
+        content: "zero ALL=(ALL) NOPASSWD:ALL\n"
+        dest: /etc/sudoers.d/zero
+        owner: root
+        group: root
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    - name: Copy zerokb binary
+      copy:
+        src: "{{ zerokb_binary }}"
+        dest: /usr/local/bin/zerokb
+        owner: root
+        group: root
+        mode: '0755'
+      notify: restart zerokb
+
+    - name: Copy HID gadget setup script
+      copy:
+        src: ../scripts/hid-setup.sh
+        dest: /usr/local/bin/zerokb-hid-setup
+        owner: root
+        group: root
+        mode: '0755'
+      notify: restart zerokb-hid
+
+    - name: Copy HID gadget systemd service
+      copy:
+        src: ../systemd/zerokb-hid.service
+        dest: /etc/systemd/system/zerokb-hid.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart zerokb-hid
+
+    - name: Copy zerokb systemd service
+      template:
+        src: ../systemd/zerokb.service
+        dest: /etc/systemd/system/zerokb.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart zerokb
+
+    - name: Enable services
+      systemd:
+        name: "{{ item }}"
+        enabled: true
+      loop:
+        - zerokb-hid
+        - zerokb
+
+    - name: Ensure dwc2 overlay is enabled in /boot/firmware/config.txt
+      lineinfile:
+        path: /boot/firmware/config.txt
+        line: "dtoverlay=dwc2"
+        create: false
+      register: dwc2_config
+
+    - name: Ensure dwc2 module loads at boot
+      lineinfile:
+        path: /etc/modules-load.d/dwc2.conf
+        line: dwc2
+        create: true
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Ensure libcomposite module loads at boot
+      lineinfile:
+        path: /etc/modules-load.d/libcomposite.conf
+        line: libcomposite
+        create: true
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Disable unnecessary services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - bluetooth
+        - hciuart
+        - ModemManager
+        - avahi-daemon
+        - triggerhappy
+        - rpi-display-backlight
+        - udisks2
+        - NetworkManager-wait-online
+        - keyboard-setup
+        - e2scrub_reap
+        - dphys-swapfile
+        - getty@tty1
+      ignore_errors: true
+
+    # --- WiFi hardening ---
+    - name: Disable WiFi power save
+      copy:
+        content: |
+          [connection]
+          wifi.powersave = 2
+        dest: /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart networkmanager
+
+    - name: Lock WiFi to nearest BSSID
+      command: nmcli con modify preconfigured 802-11-wireless.bssid 46:E9:31:4A:2E:5C
+      register: bssid_result
+      changed_when: bssid_result.rc == 0
+      ignore_errors: true
+
+    # --- Hardware watchdog ---
+    - name: Load bcm2835_wdt module
+      modprobe:
+        name: bcm2835_wdt
+        state: present
+
+    - name: Ensure bcm2835_wdt loads at boot
+      lineinfile:
+        path: /etc/modules-load.d/watchdog.conf
+        line: bcm2835_wdt
+        create: true
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable hardware watchdog in config.txt
+      lineinfile:
+        path: /boot/firmware/config.txt
+        line: "dtparam=watchdog=on"
+        create: false
+
+    # --- Volatile journald (no disk writes for logs) ---
+    - name: Set journald to volatile storage
+      lineinfile:
+        path: /etc/systemd/journald.conf
+        regexp: '^#?Storage='
+        line: 'Storage=volatile'
+      notify: restart journald
+
+    - name: Limit journal size to 16M
+      lineinfile:
+        path: /etc/systemd/journald.conf
+        regexp: '^#?RuntimeMaxUse='
+        line: 'RuntimeMaxUse=16M'
+      notify: restart journald
+
+    # --- Read-only root filesystem ---
+    - name: Enable overlayroot via raspi-config overlay
+      command: raspi-config nonint enable_overlayfs
+      register: overlayfs_result
+      changed_when: overlayfs_result.rc == 0
+      ignore_errors: true
+
+    - name: Autoremove unused packages
+      apt:
+        autoremove: true
+        purge: true
+
+    - name: Clean apt cache
+      apt:
+        autoclean: true
+
+    - name: Check if reboot needed
+      set_fact:
+        needs_reboot: "{{ dwc2_config.changed or (overlayfs_result is defined and overlayfs_result.changed) }}"
+
+    - name: Warn if reboot needed
+      debug:
+        msg: "Reboot the Pi to activate changes (dwc2/overlayfs)"
+      when: needs_reboot | bool
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: restart zerokb-hid
+      systemd:
+        name: zerokb-hid
+        state: restarted
+
+    - name: restart zerokb
+      systemd:
+        name: zerokb
+        state: restarted
+
+    - name: restart journald
+      systemd:
+        name: systemd-journald
+        state: restarted
+
+    - name: restart networkmanager
+      systemd:
+        name: NetworkManager
+        state: restarted

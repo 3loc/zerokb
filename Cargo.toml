@@ -1,0 +1,25 @@
+[package]
+name = "zerokb"
+version = "0.1.0"
+edition = "2024"
+description = "USB HID keyboard emulator for Raspberry Pi Zero 2W"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.29"
+ratatui = "0.30"
+
+[[bin]]
+name = "zerokb"
+path = "src/main.rs"
+
+[[bin]]
+name = "zerokb-tui"
+path = "src/bin/test-typing.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1

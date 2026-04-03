@@ -1,0 +1,12 @@
+[Unit]
+Description=zerokb USB HID gadget setup
+After=sys-kernel-config.mount
+Requires=sys-kernel-config.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zerokb-hid-setup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
