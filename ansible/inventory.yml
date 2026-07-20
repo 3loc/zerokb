@@ -1,8 +1,42 @@
 ---
+# zerokb runs on whichever board is physically cabled to the host laptop.
+#
+# `zero` (Pi Zero 2W) was the original and is the better object for the job —
+# roughly the size of the cable, ~200 mA. It is currently DEAD: it enumerates
+# on the host as "BCM2710 Boot", the SoC's USB-boot fallback, which means it
+# powers up and runs but finds no bootable SD card. Card reflash needed.
+#
+# `lefourier` (Pi 4B) took the job over on 2026-07-20. It is a general-purpose
+# box (docker, k3s agent), NOT a single-purpose appliance, so the aggressive
+# hardening below is switched OFF for it — see zerokb_appliance_hardening.
 all:
   hosts:
     zero:
       ansible_host: 192.168.10.8
       ansible_user: zero
+      zerokb_sudo_user: zero
+      # Cross-compiled on a dev box; the Zero is too slow to build Rust.
+      zerokb_binary: ../target/armv7-unknown-linux-gnueabihf/release/zerokb
+      zerokb_dwc2_line: "dtoverlay=dwc2"
+      zerokb_appliance_hardening: true
+      # The Zero's nearest mesh node. Meaningless on any other board.
+      zerokb_bssid: "46:E9:31:4A:2E:5C"
+
+    lefourier:
+      ansible_host: 192.168.10.4
+      ansible_user: lefourier
+      zerokb_sudo_user: lefourier
+      # aarch64, and a Pi 4 builds this crate natively in ~90s, so there is no
+      # cross-compile step. Build with: cargo build --release --bin zerokb
+      zerokb_binary: ../target/release/zerokb
+      # MUST carry dr_mode=peripheral, and MUST land under [all]: the stock
+      # Raspberry Pi OS config.txt ships dwc2 lines under [cm4]/[cm5], which do
+      # not match a Pi 4 Model B — editing those is a silent no-op that boots
+      # unchanged and wastes an hour.
+      zerokb_dwc2_line: "dtoverlay=dwc2,dr_mode=peripheral"
+      # OFF: lefourier runs docker + a k3s agent. enable_overlayfs would make
+      # root read-only and break both, and the BSSID lock / service-disabling
+      # are Zero-appliance concerns.
+      zerokb_appliance_hardening: false
   vars:
     ansible_python_interpreter: /usr/bin/python3

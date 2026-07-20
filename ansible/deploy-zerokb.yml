@@ -1,17 +1,37 @@
 ---
+# Deploys zerokb to whichever board is cabled to the host laptop.
+#
+# Per-host knobs live in ansible/inventory.yml. The important one is
+# `zerokb_appliance_hardening`: the Pi Zero is a single-purpose appliance and
+# gets read-only root, service stripping, a BSSID lock and volatile journald.
+# lefourier is a general-purpose Pi 4 running docker and a k3s agent, where
+# every one of those would be actively harmful — enable_overlayfs alone would
+# break both. Default true so the Zero's behaviour is unchanged; opt out
+# explicitly per host.
+# ALWAYS run with --limit. `hosts: all` plus an explicit limit beats a
+# templated hosts: pattern, which is a known silent-failure mode here (a
+# `hosts: "{{ var }}"` that resolves to nothing matches ZERO hosts and the
+# play reports success having done nothing). Both boards are in the
+# inventory and only one is cabled up at a time:
+#
+#   ansible-playbook -i ansible/inventory.yml ansible/deploy-zerokb.yml --limit lefourier
+#
 - name: Deploy zerokb USB HID keyboard emulator
-  hosts: zero
+  hosts: all
   become: true
 
   vars:
-    zerokb_binary: ../target/armv7-unknown-linux-gnueabihf/release/zerokb
     zerokb_port: 7070
+    zerokb_binary: ../target/armv7-unknown-linux-gnueabihf/release/zerokb
+    zerokb_sudo_user: zero
+    zerokb_dwc2_line: "dtoverlay=dwc2"
+    zerokb_appliance_hardening: true
 
   tasks:
-    - name: Enable passwordless sudo for zero user
+    - name: Enable passwordless sudo for the zerokb user
       copy:
-        content: "zero ALL=(ALL) NOPASSWD:ALL\n"
-        dest: /etc/sudoers.d/zero
+        content: "{{ zerokb_sudo_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        dest: "/etc/sudoers.d/{{ zerokb_sudo_user }}"
         owner: root
         group: root
         mode: '0440'
@@ -65,10 +85,14 @@
         - zerokb-hid
         - zerokb
 
+    # NB: appended, which puts it after any [cm4]/[cm5]/[pi4] section filter and
+    # therefore under the trailing [all] block. On a Pi 4 Model B the stock
+    # dwc2 lines sit under [cm4]/[cm5], which that board does not match — so
+    # editing those in place is a silent no-op.
     - name: Ensure dwc2 overlay is enabled in /boot/firmware/config.txt
       lineinfile:
         path: /boot/firmware/config.txt
-        line: "dtoverlay=dwc2"
+        line: "{{ zerokb_dwc2_line }}"
         create: false
       register: dwc2_config
 
@@ -109,6 +133,7 @@
         - dphys-swapfile
         - getty@tty1
       ignore_errors: true
+      when: zerokb_appliance_hardening | bool
 
     # --- WiFi hardening ---
     - name: Disable WiFi power save
@@ -123,10 +148,11 @@
       notify: restart networkmanager
 
     - name: Lock WiFi to nearest BSSID
-      command: nmcli con modify preconfigured 802-11-wireless.bssid 46:E9:31:4A:2E:5C
+      command: nmcli con modify preconfigured 802-11-wireless.bssid {{ zerokb_bssid }}
       register: bssid_result
       changed_when: bssid_result.rc == 0
       ignore_errors: true
+      when: zerokb_appliance_hardening | bool and zerokb_bssid is defined
 
     # --- Hardware watchdog ---
     - name: Load bcm2835_wdt module
@@ -156,6 +182,7 @@
         regexp: '^#?Storage='
         line: 'Storage=volatile'
       notify: restart journald
+      when: zerokb_appliance_hardening | bool
 
     - name: Limit journal size to 16M
       lineinfile:
@@ -163,6 +190,7 @@
         regexp: '^#?RuntimeMaxUse='
         line: 'RuntimeMaxUse=16M'
       notify: restart journald
+      when: zerokb_appliance_hardening | bool
 
     # --- Read-only root filesystem ---
     - name: Enable overlayroot via raspi-config overlay
@@ -170,6 +198,8 @@
       register: overlayfs_result
       changed_when: overlayfs_result.rc == 0
       ignore_errors: true
+      # Read-only root. Breaks docker and k3s outright — appliance only.
+      when: zerokb_appliance_hardening | bool
 
     - name: Autoremove unused packages
       apt:
@@ -182,7 +212,7 @@
 
     - name: Check if reboot needed
       set_fact:
-        needs_reboot: "{{ dwc2_config.changed or (overlayfs_result is defined and overlayfs_result.changed) }}"
+        needs_reboot: "{{ dwc2_config.changed or (overlayfs_result is defined and overlayfs_result.changed | default(false)) }}"
 
     - name: Warn if reboot needed
       debug:
